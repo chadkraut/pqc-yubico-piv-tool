@@ -81,8 +81,56 @@ FILE *open_file(const char *file_name, enum file_mode mode) {
 }
 
 unsigned char get_algorithm(EVP_PKEY *key) {
-  int type = EVP_PKEY_base_id(key);
   int size = EVP_PKEY_bits(key);
+
+#if (OPENSSL_VERSION_NUMBER >= 0x30000000L) && !defined(LIBRESSL_VERSION_NUMBER)
+  /* EVP_PKEY_is_a()/EVP_PKEY_get0_type_name() require OpenSSL 3.0+; also lets
+   * us identify ML-DSA/ML-KEM keys without depending on the NID_ML_* macros. */
+  if (EVP_PKEY_is_a(key, "RSA")) {
+    switch (size) {
+      case 1024:
+        return YKPIV_ALGO_RSA1024;
+      case 2048:
+        return YKPIV_ALGO_RSA2048;
+      case 3072:
+        return YKPIV_ALGO_RSA3072;
+      case 4096:
+        return YKPIV_ALGO_RSA4096;
+      default:
+        fprintf(stderr, "Unusable RSA key of %d bits, only 1024, 2048 3072 and 4096 are supported.\n", size);
+        return 0;
+    }
+  } else if (EVP_PKEY_is_a(key, "EC")) {
+    if(size == 256) {
+      return YKPIV_ALGO_ECCP256;
+    } else if(size == 384) {
+      return YKPIV_ALGO_ECCP384;
+    } else {
+      fprintf(stderr, "Unusable EC key of %d bits, only 256 and 384 are supported.\n", size);
+      return 0;
+    }
+  } else if (EVP_PKEY_is_a(key, "ED25519")) {
+    return YKPIV_ALGO_ED25519;
+  } else if (EVP_PKEY_is_a(key, "X25519")) {
+    return YKPIV_ALGO_X25519;
+  } else if (EVP_PKEY_is_a(key, "ML-DSA-44")) {
+    return YKPIV_ALGO_MLDSA44;
+  } else if (EVP_PKEY_is_a(key, "ML-DSA-65")) {
+    return YKPIV_ALGO_MLDSA65;
+  } else if (EVP_PKEY_is_a(key, "ML-DSA-87")) {
+    return YKPIV_ALGO_MLDSA87;
+  } else if (EVP_PKEY_is_a(key, "ML-KEM-512")) {
+    return YKPIV_ALGO_MLKEM512;
+  } else if (EVP_PKEY_is_a(key, "ML-KEM-768")) {
+    return YKPIV_ALGO_MLKEM768;
+  } else if (EVP_PKEY_is_a(key, "ML-KEM-1024")) {
+    return YKPIV_ALGO_MLKEM1024;
+  } else {
+    fprintf(stderr, "Unknown algorithm %s.\n", EVP_PKEY_get0_type_name(key));
+    return 0;
+  }
+#else
+  int type = EVP_PKEY_base_id(key);
 
   switch(type) {
     case EVP_PKEY_RSA:
@@ -118,24 +166,11 @@ unsigned char get_algorithm(EVP_PKEY *key) {
     case EVP_PKEY_X25519:
       return YKPIV_ALGO_X25519;
 #endif
-#if (OPENSSL_VERSION_NUMBER >= 0x30500000L)
-    case NID_ML_DSA_44:
-      return YKPIV_ALGO_MLDSA44;
-    case NID_ML_DSA_65:
-      return YKPIV_ALGO_MLDSA65;
-    case NID_ML_DSA_87:
-      return YKPIV_ALGO_MLDSA87;
-    case NID_ML_KEM_512:
-      return YKPIV_ALGO_MLKEM512;
-    case NID_ML_KEM_768:
-      return YKPIV_ALGO_MLKEM768;
-    case NID_ML_KEM_1024:
-      return YKPIV_ALGO_MLKEM1024;
-#endif
     default:
       fprintf(stderr, "Unknown algorithm %d.\n", type);
       return 0;
   }
+#endif
 }
 
 static char *string_parser(char *str_orig, char delimiter, char *str_found) {
