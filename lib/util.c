@@ -88,7 +88,10 @@ static ykpiv_rc _get_metadata_item(uint8_t *data, size_t cb_data, uint8_t tag, u
 static ykpiv_rc _set_metadata_item(uint8_t *data, size_t *pcb_data, size_t cb_data_max, uint8_t tag, uint8_t *p_item, size_t cb_item);
 
 static size_t _obj_size_max(ykpiv_state *state) {
-  return (state && state->model == DEVTYPE_NEOr3) ? CB_OBJ_MAX_NEO : CB_OBJ_MAX;
+  if (!state) return CB_OBJ_MAX;
+  if (state->model == DEVTYPE_NEOr3) return CB_OBJ_MAX_NEO;
+  if (state->model == DEVTYPE_YK4 || state->model == DEVTYPE_YK5) return CB_OBJ_MAX_YK4;
+  return CB_OBJ_MAX;
 }
 
 static unsigned long get_length_size(unsigned long length) {
@@ -766,7 +769,7 @@ ykpiv_rc ykpiv_util_generate_key_ex(ykpiv_state *state, uint8_t slot, uint8_t al
   ykpiv_rc res = YKPIV_OK;
   unsigned char in_data[11] = {0};
   unsigned char *in_ptr = in_data;
-  unsigned char data[1024] = {0};
+  unsigned char data[CB_BUF_MAX] = {0};
   unsigned char templ[] = { 0, YKPIV_INS_GENERATE_ASYMMETRIC, 0, 0 };
   unsigned long recv_len = sizeof(data);
   int sw = 0;
@@ -1022,8 +1025,8 @@ ykpiv_rc ykpiv_util_generate_key_ex(ykpiv_state *state, uint8_t slot, uint8_t al
     *point_len = cb_point;
   }
   else if (YKPIV_IS_MLDSA(algorithm) || YKPIV_IS_MLKEM(algorithm)) {
-    unsigned char *data_ptr = data + 3;
     size_t len = 0;
+    unsigned char *data_ptr = data + 2 + _ykpiv_get_length(data + 2, data + recv_len, &len);
     unsigned char expected_tag = YKPIV_IS_MLDSA(algorithm) ? TAG_MLDSA_PUBKEY : TAG_MLKEM_PUBKEY;
 
     if (*data_ptr++ != expected_tag) {

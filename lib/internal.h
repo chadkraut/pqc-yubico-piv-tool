@@ -120,6 +120,12 @@ extern "C"
 #define CB_MLKEM512_CT      768
 #define CB_MLKEM768_CT      1088
 #define CB_MLKEM1024_CT     1568
+#define CB_MLDSA44_PRIVKEY  2560
+#define CB_MLDSA65_PRIVKEY  4032
+#define CB_MLDSA87_PRIVKEY  4896
+#define CB_MLKEM512_PRIVKEY  1632
+#define CB_MLKEM768_PRIVKEY  2400
+#define CB_MLKEM1024_PRIVKEY 3168
 
 // Private key import parameter tags
 #define PARAM_TAG_MLDSA     0x09

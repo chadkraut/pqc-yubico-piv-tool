@@ -1378,7 +1378,7 @@ ykpiv_rc _ykpiv_transfer_data(ykpiv_state *state,
 
     if (out_data) {
       if (state->scp11_state.security_level) {
-        uint8_t dec[2048] = {0};
+        uint8_t dec[YKPIV_OBJ_MAX_SIZE] = {0};
         uint32_t dec_len = sizeof(dec);
         if ((res = scp11_decrypt_response(&state->scp11_state, data, recv_len, dec, &dec_len, *sw)) != YKPIV_OK) {
           return res;
@@ -2682,17 +2682,22 @@ ykpiv_rc ykpiv_import_private_key_ex(ykpiv_state *state, const unsigned char key
     n_params = 1;
   }
   else if (YKPIV_IS_MLKEM(algorithm)) {
-    // TODO: Should these be defines in internal.h ?
-    switch (algorithm) {
-      case YKPIV_ALGO_MLKEM512:
-        elem_len = 1632;
-        break;
-      case YKPIV_ALGO_MLKEM768:
-        elem_len = 2400;
-        break;
-      case YKPIV_ALGO_MLKEM1024:
-        elem_len = 3168;
-        break;
+    if (pqc_privkey_len == 64) {
+      // 64-byte seed (d || z)
+      elem_len = 64;
+    } else {
+      // TODO: Should these be defines in internal.h ?
+      switch (algorithm) {
+        case YKPIV_ALGO_MLKEM512:
+          elem_len = 1632;
+          break;
+        case YKPIV_ALGO_MLKEM768:
+          elem_len = 2400;
+          break;
+        case YKPIV_ALGO_MLKEM1024:
+          elem_len = 3168;
+          break;
+      }
     }
 
     params[0] = pqc_privkey;

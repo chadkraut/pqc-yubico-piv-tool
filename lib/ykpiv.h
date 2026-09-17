@@ -413,9 +413,9 @@ extern "C"
   /**
    * Generate key in given slot with specified parameters (extended API)
    *
-   * \p modulus, \p exp, \p ec_point, and \p pqc_pubkey should be freed with \p ykpiv_util_free() after use.
+   * \p modulus, \p exp, \p point, and \p pqc_pubkey should be freed with \p ykpiv_util_free() after use.
    *
-   * If algorithm is RSA1024 or RSA2048, the modulus, modulus_len, exp, and exp_len output parameters must be supplied.  They are filled with with public modulus (big-endian), its size, the public exponent (big-endian), and its size respectively.
+   * If algorithm is RSA1024, RSA2048, RSA3072, or RSA4096, the modulus, modulus_len, exp, and exp_len output parameters must be supplied.  They are filled with the public modulus (big-endian), its size, the public exponent (big-endian), and its size respectively.
    *
    * If algorithm is ECCP256 or ECCP384, the point and point_len output parameters must be supplied.  They are filled with the public point (uncompressed octet-string encoded per SEC1 section 2.3.4)
    *

@@ -60,6 +60,9 @@
 #if (OPENSSL_VERSION_NUMBER >= 0x30000000L)
 #include <openssl/provider.h>
 #endif
+#if (OPENSSL_VERSION_NUMBER >= 0x30500000L)
+#include <openssl/core_names.h>
+#endif
 #ifdef USE_CERT_COMPRESS
 #include <zlib.h>
 #endif
@@ -456,7 +459,8 @@ static bool generate_key(ykpiv_state *state, enum enum_slot slot,
       case algorithm_arg_MLKEM1024:
         fprintf(stderr, "Key was generated successfully but a public key cannot be parsed due to too old OpenSSL version. "
                         "Upgrade OpenSSL to at least 3.5 or use attestation command to get a signed certificate instead.\n");
-        return true;
+        ret = true;
+        goto generate_out;
 #endif
       default:
         fprintf(stderr, "Wrong algorithm.\n");
@@ -733,43 +737,43 @@ static bool import_key(ykpiv_state *state, enum enum_key_format key_format,
 #endif
 #if (OPENSSL_VERSION_NUMBER >= 0x30500000L)
     else if(YKPIV_IS_MLDSA(algorithm) || YKPIV_IS_MLKEM(algorithm)) {
+      // ML-DSA and ML-KEM both expose their retained keygen seed under the
+      // provider param name "seed" (OSSL_PKEY_PARAM_ML_DSA_SEED / OSSL_PKEY_PARAM_ML_KEM_SEED).
+      unsigned char seed[64] = {0};
+      size_t seed_len = 0;
 
-      unsigned char *der_data = NULL;
-      int der_len = i2d_PrivateKey(private_key, &der_data);
+      if (EVP_PKEY_get_octet_string_param(private_key, OSSL_PKEY_PARAM_ML_DSA_SEED,
+                                          seed, sizeof(seed), &seed_len) == 1 && seed_len > 0) {
+        rc = ykpiv_import_private_key_ex(state, key, algorithm,
+                                         NULL, 0,
+                                         NULL, 0,
+                                         NULL, 0,
+                                         NULL, 0,
+                                         NULL, 0,
+                                         NULL, 0,             // ec_data
+                                         seed, seed_len,      // pqc_privkey (retained seed)
+                                         pp, tp);
+      } else {
+        // No retained seed (e.g. the key was generated/imported without one) -
+        // fall back to exporting the complete expanded private key.
+        unsigned char privkey_buf[CB_MLDSA87_PRIVKEY] = {0};
+        size_t privkey_len = sizeof(privkey_buf);
 
-      if (der_len <= 0 || !der_data) {
-        fprintf(stderr, "Failed to encode private key to DER.\n");
-        goto import_out;
-      }
-
-      // Search for first OCTET STRING (0x04) with length 32 (0x20) - this is the seed
-      unsigned char *seed_ptr = NULL;
-      for (int i = 0; i < der_len - 33; i++) {
-        if (der_data[i] == 0x04 && der_data[i+1] == 0x20) {
-          seed_ptr = &der_data[i+2];
-          break;
+        if (EVP_PKEY_get_octet_string_param(private_key, OSSL_PKEY_PARAM_PRIV_KEY,
+                                            privkey_buf, sizeof(privkey_buf), &privkey_len) != 1) {
+          fprintf(stderr, "Failed to extract ML-DSA/ML-KEM private key.\n");
+          goto import_out;
         }
+        rc = ykpiv_import_private_key_ex(state, key, algorithm,
+                                         NULL, 0,
+                                         NULL, 0,
+                                         NULL, 0,
+                                         NULL, 0,
+                                         NULL, 0,
+                                         NULL, 0,                     // ec_data
+                                         privkey_buf, privkey_len,    // pqc_privkey (expanded key)
+                                         pp, tp);
       }
-
-      if (!seed_ptr) {
-        fprintf(stderr, "ERROR: Could not find 32-byte seed in DER-encoded private key\n");
-        OPENSSL_free(der_data);
-        goto import_out;
-      }
-
-      unsigned char seed[32];
-      memcpy(seed, seed_ptr, 32);
-      OPENSSL_free(der_data);
-
-      rc = ykpiv_import_private_key_ex(state, key, algorithm,
-                                       NULL, 0,
-                                       NULL, 0,
-                                       NULL, 0,
-                                       NULL, 0,
-                                       NULL, 0,
-                                       NULL, 0,             // ec_data
-                                       seed, 32,            // pqc_privkey (32-byte seed)
-                                       pp, tp);
     }
 #endif
 
@@ -1144,7 +1148,7 @@ static bool request_certificate(ykpiv_state *state, enum enum_key_format key_for
   if(algorithm == 0) {
     goto request_out;
   }
-  if (!YKPIV_IS_25519(algorithm)) {
+  if (!YKPIV_IS_25519(algorithm) && !YKPIV_IS_MLDSA(algorithm)) {
     md = get_hash(hash, &oid, &oid_len);
     if (md == NULL) {
       goto request_out;
@@ -1216,30 +1220,49 @@ static bool request_certificate(ykpiv_state *state, enum enum_key_format key_for
 #else
 
 #if (OPENSSL_VERSION_NUMBER >= 0x10100000L)
-  if (algorithm == YKPIV_ALGO_ED25519) {
+  if (algorithm == YKPIV_ALGO_ED25519 || YKPIV_IS_MLDSA(algorithm)) {
 
-    // Generate a dummy ED25519 to sign with OpenSSL
-    EVP_PKEY *ed_key = NULL;
-    EVP_PKEY_CTX *ed_ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_ED25519, NULL);
-    EVP_PKEY_keygen_init(ed_ctx);
-    EVP_PKEY_keygen(ed_ctx, &ed_key);
-    EVP_PKEY_CTX_free(ed_ctx);
+    // Generate a dummy key to sign with OpenSSL (Ed25519 or ML-DSA)
+    EVP_PKEY *sig_key = NULL;
+    EVP_PKEY_CTX *sig_ctx = NULL;
 
-    // Sign the request object using the dummy key
-    if (X509_REQ_sign(req, ed_key, md) == 0) {
-      fprintf(stderr, "Failed signing certificate.\n");
-      ERR_print_errors_fp(stderr);
-      EVP_PKEY_free(ed_key);
+    if (algorithm == YKPIV_ALGO_ED25519) {
+      sig_ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_ED25519, NULL);
+    }
+#if (OPENSSL_VERSION_NUMBER >= 0x30500000L)
+    else if (algorithm == YKPIV_ALGO_MLDSA44) {
+      sig_ctx = EVP_PKEY_CTX_new_from_name(NULL, "ML-DSA-44", NULL);
+    } else if (algorithm == YKPIV_ALGO_MLDSA65) {
+      sig_ctx = EVP_PKEY_CTX_new_from_name(NULL, "ML-DSA-65", NULL);
+    } else if (algorithm == YKPIV_ALGO_MLDSA87) {
+      sig_ctx = EVP_PKEY_CTX_new_from_name(NULL, "ML-DSA-87", NULL);
+    }
+#endif
+
+    if (!sig_ctx) {
+      fprintf(stderr, "Failed creating context for dummy key.\n");
       goto request_out;
     }
-    EVP_PKEY_free(ed_key);
+
+    EVP_PKEY_keygen_init(sig_ctx);
+    EVP_PKEY_keygen(sig_ctx, &sig_key);
+    EVP_PKEY_CTX_free(sig_ctx);
+
+    // Sign the request object using the dummy key
+    if (X509_REQ_sign(req, sig_key, md) == 0) {
+      fprintf(stderr, "Failed signing certificate.\n");
+      ERR_print_errors_fp(stderr);
+      EVP_PKEY_free(sig_key);
+      goto request_out;
+    }
+    EVP_PKEY_free(sig_key);
 
     // Extract the request data without the signature
     unsigned char *tbs_data = NULL;
     int tbs_len = i2d_re_X509_REQ_tbs(req, &tbs_data);
 
     // Sign the request data using the YubiKey
-    unsigned char yk_sig[64] = {0};
+    unsigned char yk_sig[YKPIV_OBJ_MAX_SIZE] = {0};  // Must fit ML-DSA-87 (4627 bytes)
     size_t yk_siglen = sizeof(yk_sig);
     if (!sign_data(state, tbs_data, tbs_len, yk_sig, &yk_siglen, algorithm, key)) {
       fprintf(stderr, "Failed signing tbs request portion.\n");
@@ -1472,7 +1495,7 @@ static bool selfsign_certificate(ykpiv_state *state, enum enum_key_format key_fo
     fprintf(stderr, "Failed setting certificate issuer.\n");
     goto selfsign_out;
   }
-  int nid = get_hashnid(hash, algorithm);
+  int nid = YKPIV_IS_MLDSA(algorithm) ? get_pqc_nid(algorithm) : get_hashnid(hash, algorithm);
   if(nid == 0) {
     goto selfsign_out;
   }
@@ -1894,7 +1917,7 @@ static bool sign_file(ykpiv_state *state, const char *input, const char *output,
     if(algo == YKPIV_ALGO_X25519) {
       fprintf(stderr, "Signing with X25519 key is not supported\n");
       goto out;
-    } else if (algo == YKPIV_ALGO_ED25519) {
+    } else if (algo == YKPIV_ALGO_ED25519 || YKPIV_IS_MLDSA(algo)) {
       hash_len = fread(hashed, 1, sizeof(hashed), input_file);
       if(hash_len >= sizeof(hashed)) {
         fprintf(stderr, "Cannot perform signature. File too big.\n");
@@ -1937,7 +1960,7 @@ static bool sign_file(ykpiv_state *state, const char *input, const char *output,
   }
 
   {
-    unsigned char buf[1024] = {0};
+    unsigned char buf[YKPIV_OBJ_MAX_SIZE] = {0};  // Must fit ML-DSA-87 (4627 bytes)
     size_t len = sizeof(buf);
     if(!sign_data(state, hashed, hash_len, buf, &len, algo, key)) {
       fprintf(stderr, "Failed signing file\n");
@@ -2555,6 +2578,46 @@ static bool test_decipher(ykpiv_state *state, enum enum_slot slot,
         fprintf(stderr, "ECDH exchange with card failed!\n");
       }
     }
+#if (OPENSSL_VERSION_NUMBER >= 0x30500000L)
+    else if(YKPIV_IS_MLKEM(algorithm)) {
+      unsigned char ct[1568] = {0};
+      unsigned char secret[64] = {0};
+      unsigned char secret2[64] = {0};
+      size_t ct_len = sizeof(ct);
+      size_t secret_len = sizeof(secret);
+      size_t secret2_len = sizeof(secret2);
+      EVP_PKEY_CTX *kem_ctx = EVP_PKEY_CTX_new_from_pkey(NULL, pubkey, NULL);
+
+      if(!kem_ctx || EVP_PKEY_encapsulate_init(kem_ctx, NULL) <= 0) {
+        fprintf(stderr, "Failed to initialize ML-KEM encapsulation\n");
+        EVP_PKEY_CTX_free(kem_ctx);
+        goto decipher_out;
+      }
+      if(EVP_PKEY_encapsulate(kem_ctx, ct, &ct_len, secret, &secret_len) <= 0) {
+        fprintf(stderr, "Failed to perform ML-KEM encapsulation\n");
+        EVP_PKEY_CTX_free(kem_ctx);
+        goto decipher_out;
+      }
+      EVP_PKEY_CTX_free(kem_ctx);
+
+      if(ykpiv_decipher_data(state, ct, ct_len, secret2, &secret2_len, algorithm, key) != YKPIV_OK) {
+        fprintf(stderr, "Failed ML-KEM decapsulation!\n");
+        goto decipher_out;
+      }
+      if(verbose) {
+        fprintf(stderr, "ML-KEM host generated: ");
+        dump_data(secret, secret_len, stderr, true, format_arg_hex);
+        fprintf(stderr, "ML-KEM card generated: ");
+        dump_data(secret2, secret2_len, stderr, true, format_arg_hex);
+      }
+      if(secret_len == secret2_len && memcmp(secret, secret2, secret_len) == 0) {
+        fprintf(stderr, "Successfully performed ML-KEM decapsulation with card.\n");
+        ret = true;
+      } else {
+        fprintf(stderr, "ML-KEM decapsulation with card failed!\n");
+      }
+    }
+#endif
   }
 
 decipher_out:
