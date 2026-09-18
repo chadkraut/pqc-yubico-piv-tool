@@ -1785,7 +1785,11 @@ ykpiv_rc ykpiv_util_parse_metadata(uint8_t *data, size_t data_len, ykpiv_metadat
   }
 
   rc = _get_metadata_item(data, data_len, YKPIV_METADATA_PUBKEY_TAG, &p, &cb);
-  if(rc == YKPIV_OK && cb > 0 && cb <= sizeof(metadata->pubkey)) {
+  if(rc == YKPIV_OK && cb > 0) {
+    if(cb > sizeof(metadata->pubkey)) {
+      DBG("Public key in metadata (%zu bytes) exceeds buffer size (%zu bytes).", cb, sizeof(metadata->pubkey));
+      return YKPIV_SIZE_ERROR;
+    }
     metadata->pubkey_len = cb;
     memcpy(metadata->pubkey, p, cb);
     cnt++;

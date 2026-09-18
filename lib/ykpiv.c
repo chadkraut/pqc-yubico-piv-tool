@@ -1791,21 +1791,18 @@ static ykpiv_rc _general_authenticate(ykpiv_state *state,
       }
       break;
     case YKPIV_ALGO_MLDSA44:
-      key_len = CB_MLDSA44_SIG;
       if(decipher) {
         DBG("Deciphering with ML-DSA-44 keys is not supported");
         return YKPIV_NOT_SUPPORTED;
       }
       break;
     case YKPIV_ALGO_MLDSA65:
-      key_len = CB_MLDSA65_SIG;
       if(decipher) {
         DBG("Deciphering with ML-DSA-65 keys is not supported");
         return YKPIV_NOT_SUPPORTED;
       }
       break;
     case YKPIV_ALGO_MLDSA87:
-      key_len = CB_MLDSA87_SIG;
       if(decipher) {
         DBG("Deciphering with ML-DSA-87 keys is not supported");
         return YKPIV_NOT_SUPPORTED;
@@ -2598,6 +2595,11 @@ ykpiv_rc ykpiv_import_private_key_ex(ykpiv_state *state, const unsigned char key
       touch_policy != YKPIV_TOUCHPOLICY_CACHED)
     return YKPIV_GENERIC_ERROR;
 
+  if ((YKPIV_IS_MLDSA(algorithm) || YKPIV_IS_MLKEM(algorithm)) && !is_version_compatible(state, 6, 0, 0)) {
+    DBG("ML-DSA and ML-KEM keys are only supported in YubiKey version 6.0.0 and newer");
+    return YKPIV_NOT_SUPPORTED;
+  }
+
   if (YKPIV_IS_RSA(algorithm)) {
     if ((algorithm == YKPIV_ALGO_RSA3072 || algorithm == YKPIV_ALGO_RSA4096) && !is_version_compatible(state, 5, 7, 0)) {
       DBG("RSA3072 and RSA4096 keys are only supported in YubiKey version 5.7.0 and above");
@@ -2658,21 +2660,25 @@ ykpiv_rc ykpiv_import_private_key_ex(ykpiv_state *state, const unsigned char key
     n_params = 1;
   }
   else if (YKPIV_IS_MLDSA(algorithm)) {
-    // TODO: Little confused on this part, is it always seed?
+    // A 32-byte private key is always the ML-DSA keygen seed; otherwise it
+    // must be the full expanded private key for the given parameter set.
     if (pqc_privkey_len == 32) {
       elem_len = 32;
     } else {
-      // TODO: Should these be defines in internal.h ?
       switch (algorithm) {
         case YKPIV_ALGO_MLDSA44:
-          elem_len = 2560;
+          elem_len = CB_MLDSA44_PRIVKEY;
           break;
         case YKPIV_ALGO_MLDSA65:
-          elem_len = 4032;
+          elem_len = CB_MLDSA65_PRIVKEY;
           break;
         case YKPIV_ALGO_MLDSA87:
-          elem_len = 4896;
+          elem_len = CB_MLDSA87_PRIVKEY;
           break;
+      }
+      if (pqc_privkey_len != elem_len) {
+        DBG("ML-DSA private key must be either a 32-byte seed or the full %zu-byte expanded key.", elem_len);
+        return YKPIV_ARGUMENT_ERROR;
       }
     }
 
@@ -2686,17 +2692,20 @@ ykpiv_rc ykpiv_import_private_key_ex(ykpiv_state *state, const unsigned char key
       // 64-byte seed (d || z)
       elem_len = 64;
     } else {
-      // TODO: Should these be defines in internal.h ?
       switch (algorithm) {
         case YKPIV_ALGO_MLKEM512:
-          elem_len = 1632;
+          elem_len = CB_MLKEM512_PRIVKEY;
           break;
         case YKPIV_ALGO_MLKEM768:
-          elem_len = 2400;
+          elem_len = CB_MLKEM768_PRIVKEY;
           break;
         case YKPIV_ALGO_MLKEM1024:
-          elem_len = 3168;
+          elem_len = CB_MLKEM1024_PRIVKEY;
           break;
+      }
+      if (pqc_privkey_len != elem_len) {
+        DBG("ML-KEM private key must be either a 64-byte seed or the full %zu-byte expanded key.", elem_len);
+        return YKPIV_ARGUMENT_ERROR;
       }
     }
 

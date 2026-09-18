@@ -310,13 +310,16 @@ extern "C"
   } ykpiv_mgm;
 #pragma pack(pop)
 
+  // Largest public key ykpiv_get_metadata() can report: ML-DSA-87 (2592 bytes)
+#define YKPIV_METADATA_PUBKEY_MAX 2592
+
   typedef struct _ykpiv_metadata {
     uint8_t algorithm;
     uint8_t pin_policy;
     uint8_t touch_policy;
     uint8_t origin;
     size_t pubkey_len;
-    uint8_t pubkey[1024];
+    uint8_t pubkey[YKPIV_METADATA_PUBKEY_MAX];
   } ykpiv_metadata;
 
   /**

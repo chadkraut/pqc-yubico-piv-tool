@@ -264,6 +264,12 @@ static EVP_PKEY* wrap_public_key(ykpiv_state *state, int algorithm, EVP_PKEY *pu
     }
     EVP_PKEY_assign_EC_KEY(pkey, sk);
   }
+  else {
+    fprintf(stderr, "Unsupported algorithm for signing.\n");
+    free(int_key);
+    EVP_PKEY_free(pkey);
+    return NULL;
+  }
   return pkey;
 }
 #endif
@@ -738,11 +744,13 @@ static bool import_key(ykpiv_state *state, enum enum_key_format key_format,
 #if (OPENSSL_VERSION_NUMBER >= 0x30500000L)
     else if(YKPIV_IS_MLDSA(algorithm) || YKPIV_IS_MLKEM(algorithm)) {
       // ML-DSA and ML-KEM both expose their retained keygen seed under the
-      // provider param name "seed" (OSSL_PKEY_PARAM_ML_DSA_SEED / OSSL_PKEY_PARAM_ML_KEM_SEED).
+      // provider param name "seed", but under different param names
+      // (OSSL_PKEY_PARAM_ML_DSA_SEED / OSSL_PKEY_PARAM_ML_KEM_SEED).
       unsigned char seed[64] = {0};
       size_t seed_len = 0;
+      const char *seed_param = YKPIV_IS_MLDSA(algorithm) ? OSSL_PKEY_PARAM_ML_DSA_SEED : OSSL_PKEY_PARAM_ML_KEM_SEED;
 
-      if (EVP_PKEY_get_octet_string_param(private_key, OSSL_PKEY_PARAM_ML_DSA_SEED,
+      if (EVP_PKEY_get_octet_string_param(private_key, seed_param,
                                           seed, sizeof(seed), &seed_len) == 1 && seed_len > 0) {
         rc = ykpiv_import_private_key_ex(state, key, algorithm,
                                          NULL, 0,
@@ -957,7 +965,7 @@ static bool import_cert(ykpiv_state *state, enum enum_key_format cert_format, in
   if (ykpiv_get_metadata(state, key, metadata, &metadata_len) == YKPIV_OK &&
       ykpiv_util_parse_metadata(metadata, metadata_len, &slot_md) == YKPIV_OK) {
     EVP_PKEY *cert_pubkey = X509_get_pubkey(cert);
-    EVP_PKEY *md_pubkey = EVP_PKEY_new();
+    EVP_PKEY *md_pubkey = NULL;
     if (do_create_public_key(slot_md.pubkey, slot_md.pubkey_len, slot_md.algorithm, &md_pubkey) == YKPIV_OK &&
         EVP_PKEY_cmp(cert_pubkey, md_pubkey) != 1) {
         fprintf(stderr, "\nBeware! The private key and the X509Certificate in slot %x do not match\n\n", key);
@@ -1148,6 +1156,10 @@ static bool request_certificate(ykpiv_state *state, enum enum_key_format key_for
   if(algorithm == 0) {
     goto request_out;
   }
+  if (YKPIV_IS_MLKEM(algorithm)) {
+    fprintf(stderr, "Signing with ML-KEM keys is not supported.\n");
+    goto request_out;
+  }
   if (!YKPIV_IS_25519(algorithm) && !YKPIV_IS_MLDSA(algorithm)) {
     md = get_hash(hash, &oid, &oid_len);
     if (md == NULL) {
@@ -1260,14 +1272,20 @@ static bool request_certificate(ykpiv_state *state, enum enum_key_format key_for
     // Extract the request data without the signature
     unsigned char *tbs_data = NULL;
     int tbs_len = i2d_re_X509_REQ_tbs(req, &tbs_data);
+    if (tbs_len <= 0 || tbs_data == NULL) {
+      fprintf(stderr, "Failed extracting tbs request portion.\n");
+      goto request_out;
+    }
 
     // Sign the request data using the YubiKey
     unsigned char yk_sig[YKPIV_OBJ_MAX_SIZE] = {0};  // Must fit ML-DSA-87 (4627 bytes)
     size_t yk_siglen = sizeof(yk_sig);
-    if (!sign_data(state, tbs_data, tbs_len, yk_sig, &yk_siglen, algorithm, key)) {
+    if (!sign_data(state, tbs_data, (size_t)tbs_len, yk_sig, &yk_siglen, algorithm, key)) {
       fprintf(stderr, "Failed signing tbs request portion.\n");
+      OPENSSL_free(tbs_data);
       goto request_out;
     }
+    OPENSSL_free(tbs_data);
 
     // Replace the dummy signature with the signature from the yubikey
     ASN1_BIT_STRING *psig;
@@ -1280,6 +1298,9 @@ static bool request_certificate(ykpiv_state *state, enum enum_key_format key_for
     /* With opaque structures we can not touch whatever we want, but we need
      * to embed the sign_data function in the RSA/EC key structures  */
     EVP_PKEY *sk = wrap_public_key(state, algorithm, public_key, key, oid, oid_len);
+    if(!sk) {
+      goto request_out;
+    }
 
     if(X509_REQ_sign(req, sk, md) == 0) {
       fprintf(stderr, "Failed signing request.\n");
@@ -1425,6 +1446,10 @@ static bool selfsign_certificate(ykpiv_state *state, enum enum_key_format key_fo
   }
   if(algorithm == YKPIV_ALGO_X25519) {
     fprintf(stderr, "Signing with X25519 keys is not supported.\n");
+    goto selfsign_out;
+  }
+  if(YKPIV_IS_MLKEM(algorithm)) {
+    fprintf(stderr, "Signing with ML-KEM keys is not supported.\n");
     goto selfsign_out;
   }
 
@@ -1639,14 +1664,20 @@ static bool selfsign_certificate(ykpiv_state *state, enum enum_key_format key_fo
     // Extract the certificate data without the signature
     unsigned char *tbs_data = NULL;
     int tbs_len = i2d_re_X509_tbs(x509, &tbs_data);
+    if (tbs_len <= 0 || tbs_data == NULL) {
+      fprintf(stderr, "Failed extracting tbs certificate portion.\n");
+      goto selfsign_out;
+    }
 
     // Sign the certificate data using the YubiKey
     unsigned char yk_sig[YKPIV_OBJ_MAX_SIZE] = {0};  // Must fit ML-DSA-87 (4627 bytes)
     size_t yk_siglen = sizeof(yk_sig);
-    if (!sign_data(state, tbs_data, tbs_len, yk_sig, &yk_siglen, algorithm, key)) {
+    if (!sign_data(state, tbs_data, (size_t)tbs_len, yk_sig, &yk_siglen, algorithm, key)) {
       fprintf(stderr, "Failed signing tbs certificate portion.\n");
+      OPENSSL_free(tbs_data);
       goto selfsign_out;
     }
+    OPENSSL_free(tbs_data);
 
     // Replace the dummy signature with the signature from the yubikey
     ASN1_BIT_STRING *psig;
@@ -1658,6 +1689,9 @@ static bool selfsign_certificate(ykpiv_state *state, enum enum_key_format key_fo
     /* With opaque structures we can not touch whatever we want, but we need
      * to embed the sign_data function in the RSA/EC key structures  */
     EVP_PKEY *sk = wrap_public_key(state, algorithm, public_key, key, oid, oid_len);
+    if(!sk) {
+      goto selfsign_out;
+    }
 
     if(X509_sign(x509, sk, md) == 0) {
       fprintf(stderr, "Failed signing certificate.\n");
@@ -1917,6 +1951,9 @@ static bool sign_file(ykpiv_state *state, const char *input, const char *output,
     if(algo == YKPIV_ALGO_X25519) {
       fprintf(stderr, "Signing with X25519 key is not supported\n");
       goto out;
+    } else if (YKPIV_IS_MLKEM(algo)) {
+      fprintf(stderr, "Signing with ML-KEM keys is not supported\n");
+      goto out;
     } else if (algo == YKPIV_ALGO_ED25519 || YKPIV_IS_MLDSA(algo)) {
       hash_len = fread(hashed, 1, sizeof(hashed), input_file);
       if(hash_len >= sizeof(hashed)) {
@@ -2152,7 +2189,7 @@ static void print_slot_info(ykpiv_state *state, enum enum_slot slot, const EVP_M
   }
 
   if(cert_found && metadata_found) {
-    EVP_PKEY *md_key = EVP_PKEY_new();
+    EVP_PKEY *md_key = NULL;
     if (do_create_public_key(slot_md.pubkey, slot_md.pubkey_len, slot_md.algorithm, &md_key) == YKPIV_OK &&
         EVP_PKEY_cmp(key, md_key) != 1) {
         fprintf(output, "\tBeware! Slot private key and certificate do not match\n");
