@@ -71,7 +71,7 @@ extern "C"
 // Device-specific buffer sizes
 #define CB_BUF_MAX_NEO      2048  // YubiKey NEO
 #define CB_BUF_MAX_YK4      3072  // YubiKey 4 and 5 (standard size)
-#define CB_BUF_MAX_YK6      4928  // YubiKey 6 
+#define CB_BUF_MAX_YK6      8192  // YubiKey 6 
 
 #define CB_OBJ_MAX_NEO      (CB_BUF_MAX_NEO - 9)
 #define CB_OBJ_MAX_YK4      (CB_BUF_MAX_YK4 - 9)

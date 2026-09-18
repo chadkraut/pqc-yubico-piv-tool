@@ -765,7 +765,7 @@ extern "C"
 #define TAG_CERT_COMPRESS     0x71
 #define TAG_CERT_LRC          0xFE
 
-#define YKPIV_OBJ_MAX_SIZE 4928  // YubiKey 6 max object size (increased for PQC operations)
+#define YKPIV_OBJ_MAX_SIZE 8192  // YubiKey 6 max object size (increased for PQC operations)
                                  // YubiKey 4/5: 3063 bytes, YubiKey NEO: 2039 bytes
                                  // Runtime detection handles older devices
 
